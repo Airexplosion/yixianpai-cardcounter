@@ -38,19 +38,19 @@ namespace YxCounter
             // 换牌成功时游戏在主线程 Invoke 的空回调（带旧/新牌 id）；比 net 消息可靠，只在真的换成时触发。
             // 挂不上（游戏改名）只少「换牌 -3」这一路，不让整个 mod 加载失败 → 用 TryPrefix。
             Yx.Shared.ISubscription sub = ctx.Hooks.TryPrefix("ReadyLayer", "OnReplaceSucceed", 2, OnReplaceHook);
-            if (sub == null) ctx.Log.Warn("记牌器：换牌钩子 ReadyLayer.OnReplaceSucceed 没挂上（游戏可能更新了），换牌 -3 本局不生效。");
+            if (sub == null) ctx.Log.Warn(ctx.T("记牌器：换牌钩子 ReadyLayer.OnReplaceSucceed 没挂上（游戏可能更新了），换牌 -3 本局不生效。", "Card Counter: reroll hook ReadyLayer.OnReplaceSucceed not installed (game may have updated); reroll -3 won't apply this run."));
             // 道韵选牌确认：白给的牌不从牌库来，别算抽。玩家点「确认」时 panel.daoYun 就是选中的牌 id。
             Yx.Shared.ISubscription sub2 = ctx.Hooks.TryPrefix("BattleDaoYunSelectionPanel", "OnComfirmBtnClick", 0, OnDaoYunConfirmHook);
-            if (sub2 == null) ctx.Log.Warn("记牌器：道韵钩子 BattleDaoYunSelectionPanel.OnComfirmBtnClick 没挂上（游戏可能更新了），道韵白给的牌会被误当抽牌。");
+            if (sub2 == null) ctx.Log.Warn(ctx.T("记牌器：道韵钩子 BattleDaoYunSelectionPanel.OnComfirmBtnClick 没挂上（游戏可能更新了），道韵白给的牌会被误当抽牌。", "Card Counter: DaoYun hook BattleDaoYunSelectionPanel.OnComfirmBtnClick not installed (game may have updated); DaoYun free cards will be miscounted as draws."));
             // 变换获得（如天衍另辟蹊径把一张牌变成别的牌）：变出来的牌不是抽的。钩 CardItem.ToNewCard，变成不同 base 时记白给。
             // 合成/升级也走 ToNewCard 但 base 不变，GameCards 里会跳过。
             Yx.Shared.ISubscription sub3 = ctx.Hooks.TryPrefix("CardItem", "ToNewCard", 4, OnTransformHook);
-            if (sub3 == null) ctx.Log.Warn("记牌器：变换钩子 CardItem.ToNewCard 没挂上（游戏可能更新了），变换获得的牌会被误当抽牌。");
+            if (sub3 == null) ctx.Log.Warn(ctx.T("记牌器：变换钩子 CardItem.ToNewCard 没挂上（游戏可能更新了），变换获得的牌会被误当抽牌。", "Card Counter: transform hook CardItem.ToNewCard not installed (game may have updated); transformed cards will be miscounted as draws."));
             // 通用「获得牌」通道（BN_GotCards）：天衍仙命被选中时白给一张牌（如极·云剑柔心 → 云剑·柔心）等都走这里，
             // info.args 就是白给进手牌的牌 id。这条是同步加牌，额度必被 owned 消费、不会残留。
             Yx.Shared.ISubscription sub4 = ctx.Hooks.TryPrefix("YiXianPai.BattleManagerComponents.CommonActionNotifyHandler", "GotCards", 1, OnGotCardsHook);
-            if (sub4 == null) ctx.Log.Warn("记牌器：获得牌钩子 CommonActionNotifyHandler.GotCards 没挂上（游戏可能更新了），仙命白给的牌会被误当抽牌。");
-            ctx.Log.Info("记牌器已加载：每张牌角显示牌库剩余份数（每卡 8，抽 -1，换 -3；白给/选牌/变换/仙命给牌不减）。");
+            if (sub4 == null) ctx.Log.Warn(ctx.T("记牌器：获得牌钩子 CommonActionNotifyHandler.GotCards 没挂上（游戏可能更新了），仙命白给的牌会被误当抽牌。", "Card Counter: GotCards hook CommonActionNotifyHandler.GotCards not installed (game may have updated); Destiny free cards will be miscounted as draws."));
+            ctx.Log.Info(ctx.T("记牌器已加载：每张牌角显示牌库剩余份数（每卡 8，抽 -1，换 -3；白给/选牌/变换/仙命给牌不减）。", "Card Counter loaded: each card corner shows remaining deck copies (8 per card, draw -1, reroll -3; free/selected/transformed/Destiny cards don't reduce)."));
         }
 
         // 换牌成功钩子：Args[0]=旧牌 id、Args[1]=新牌 id（都是装箱 int）。入队，OnUpdate 每帧 drain（先于快照）。
@@ -65,7 +65,7 @@ namespace YxCounter
                     int newId = (int)h.Args[1];
                     _rerolls.Add(new int[] { oldId, newId });
                     if (_log != null)
-                        _log.Info("记牌器：换牌 " + oldId.ToString(CultureInfo.InvariantCulture) + "→" + newId.ToString(CultureInfo.InvariantCulture) + "（弃牌 -3）");
+                        _log.Info(Context.T("记牌器：换牌 ", "Card Counter: reroll ") + oldId.ToString(CultureInfo.InvariantCulture) + "→" + newId.ToString(CultureInfo.InvariantCulture) + Context.T("（弃牌 -3）", " (discard -3)"));
                 }
             }
             catch (Exception) { }
@@ -83,7 +83,7 @@ namespace YxCounter
                     if (baseId > 0)
                     {
                         _grantQueue.Add(baseId);
-                        if (_log != null) _log.Info("记牌器：道韵白给 " + baseId.ToString(CultureInfo.InvariantCulture) + "（不减牌库）");
+                        if (_log != null) _log.Info(Context.T("记牌器：道韵白给 ", "Card Counter: DaoYun free card ") + baseId.ToString(CultureInfo.InvariantCulture) + Context.T("（不减牌库）", " (deck not reduced)"));
                     }
                 }
             }
@@ -103,7 +103,7 @@ namespace YxCounter
                     if (baseId > 0)
                     {
                         _grantQueue.Add(baseId);
-                        if (_log != null) _log.Info("记牌器：变换获得 " + baseId.ToString(CultureInfo.InvariantCulture) + "（不减牌库）");
+                        if (_log != null) _log.Info(Context.T("记牌器：变换获得 ", "Card Counter: transform gain ") + baseId.ToString(CultureInfo.InvariantCulture) + Context.T("（不减牌库）", " (deck not reduced)"));
                     }
                 }
             }
@@ -123,7 +123,7 @@ namespace YxCounter
                         for (int i = 0; i < ids.Length; i++)
                         {
                             _grantQueue.Add(ids[i]);
-                            if (_log != null) _log.Info("记牌器：获得牌 " + ids[i].ToString(CultureInfo.InvariantCulture) + "（不减牌库）");
+                            if (_log != null) _log.Info(Context.T("记牌器：获得牌 ", "Card Counter: got card ") + ids[i].ToString(CultureInfo.InvariantCulture) + Context.T("（不减牌库）", " (deck not reduced)"));
                         }
                 }
             }
@@ -146,7 +146,7 @@ namespace YxCounter
                     {
                         _counter.Reset(); _rerolls.Clear(); _grantQueue.Clear(); _lastSelected = 0; _seenFates.Clear();
                         _lastBeginTs = ts;
-                        if (_log != null) _log.Info("记牌器：新局清零（beginTs=" + ts.ToString(CultureInfo.InvariantCulture) + "）");
+                        if (_log != null) _log.Info(Context.T("记牌器：新局清零（beginTs=", "Card Counter: new game reset (beginTs=") + ts.ToString(CultureInfo.InvariantCulture) + Context.T("）", ")"));
                     }
                     _game.RebuildPool();                 // 先按当前激活仙命重算牌池份数（瞬影击/全能副职等）
                     Dictionary<int, int> owned = _game.OwnedSnapshot();
@@ -156,7 +156,7 @@ namespace YxCounter
                     {
                         List<string> fates = _game.DiscoverFates();
                         for (int i = 0; i < fates.Count; i++)
-                            if (_seenFates.Add(fates[i])) _log.Info("记牌器：发现 " + fates[i]);
+                            if (_seenFates.Add(fates[i])) _log.Info(Context.T("记牌器：发现 ", "Card Counter: found ") + fates[i]);
                     }
                 }
                 // 每帧刷角标（复用同一层、只改文字 → 不闪；跟随悬浮放大；同 HUD 每帧刷）。
@@ -166,7 +166,7 @@ namespace YxCounter
                     CardRef cr = cards[i];
                     if (cr == null || cr.Rt == null) continue;
                     if (_game.IsDeckCard(cr.BaseId))
-                        CardUi.SetBadge(cr.Rt, "cnt", "剩" + _counter.RemainingOf(cr.BaseId).ToString(CultureInfo.InvariantCulture));
+                        CardUi.SetBadge(cr.Rt, "cnt", Context.T("剩", "") + _counter.RemainingOf(cr.BaseId).ToString(CultureInfo.InvariantCulture));
                     else
                         CardUi.ClearBadge(cr.Rt, "cnt");
                 }
@@ -209,7 +209,7 @@ namespace YxCounter
             if (_game.IsDeckCard(baseId) && !_game.IsFatePoolCard(baseId))
             {
                 _counter.ApplyGrant(baseId);
-                if (_log != null) _log.Info("记牌器：选牌获得 " + baseId.ToString(CultureInfo.InvariantCulture) + "（不减牌库）");
+                if (_log != null) _log.Info(Context.T("记牌器：选牌获得 ", "Card Counter: selected card ") + baseId.ToString(CultureInfo.InvariantCulture) + Context.T("（不减牌库）", " (deck not reduced)"));
             }
         }
 
