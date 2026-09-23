@@ -50,7 +50,20 @@ namespace YxCounter
             // info.args 就是白给进手牌的牌 id。这条是同步加牌，额度必被 owned 消费、不会残留。
             Yx.Shared.ISubscription sub4 = ctx.Hooks.TryPrefix("YiXianPai.BattleManagerComponents.CommonActionNotifyHandler", "GotCards", 1, OnGotCardsHook);
             if (sub4 == null) ctx.Log.Warn(ctx.T("记牌器：获得牌钩子 CommonActionNotifyHandler.GotCards 没挂上（游戏可能更新了），仙命白给的牌会被误当抽牌。", "Card Counter: GotCards hook CommonActionNotifyHandler.GotCards not installed (game may have updated); Destiny free cards will be miscounted as draws."));
-            ctx.Log.Info(ctx.T("记牌器已加载：每张牌角显示牌库剩余份数（每卡 8，抽 -1，换 -3；白给/选牌/变换/仙命给牌不减）。", "Card Counter loaded: each card corner shows remaining deck copies (8 per card, draw -1, reroll -3; free/selected/transformed/Destiny cards don't reduce)."));
+            // RPC：把「每张牌剩余份数」暴露给管理器（base id → 剩数）。AI 自动摆牌（com.yx.autopilot）经管理器合并进观察。
+            // 只读、无副作用；主线程调用（RPC 分发在主线程，与本 mod 的计数状态同线程）。
+            ctx.Rpc.Register("cardcounter.remaining", delegate(List<object> a) { return RemainingRpc(a); });
+            ctx.Log.Info(ctx.T("记牌器已加载：每张牌角显示牌库剩余份数（每卡 8、化神 6，抽 -1，换 -3；白给/选牌/变换/仙命给牌不减）。", "Card Counter loaded: each card corner shows remaining deck copies (8 per card, 6 for Divinity-realm cards, draw -1, reroll -3; free/selected/transformed/Destiny cards don't reduce)."));
+        }
+
+        /// <summary>RPC <c>cardcounter.remaining</c>：当前每张牌剩余份数，键是 base id 的字符串，值是剩数（只含剩 &gt; 0 的）。</summary>
+        object RemainingRpc(List<object> args)
+        {
+            Dictionary<int, int> map = _counter.Remaining();
+            var d = new Dictionary<string, object>();
+            foreach (KeyValuePair<int, int> kv in map)
+                d[kv.Key.ToString(CultureInfo.InvariantCulture)] = kv.Value;
+            return d;
         }
 
         // 换牌成功钩子：Args[0]=旧牌 id、Args[1]=新牌 id（都是装箱 int）。入队，OnUpdate 每帧 drain（先于快照）。

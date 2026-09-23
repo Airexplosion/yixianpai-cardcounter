@@ -14,7 +14,7 @@ namespace YxCounter
 
     /// <summary>
     /// 游戏访问层：读手牌/牌桌/玉瓶的牌、归一到一级 base id、供元数据（<see cref="ICardMeta"/>）。
-    /// 只有这里碰游戏类型（CardPanel/CardItem/CardFactory/CardConfig）。Phase A：MaxCopies 一律 8
+    /// 只有这里碰游戏类型（CardPanel/CardItem/CardFactory/CardConfig）。MaxCopies：默认 8、化神期 6
     /// （phase-5=6、SPECIAL_COPIES、副职牌池在 Phase B 补）。
     /// </summary>
     public sealed class GameCards : ICardMeta
@@ -28,6 +28,10 @@ namespace YxCounter
         static readonly string[] SPECIAL_COPY_NAMES  = { "洗髓丹", "悟道丹", "锻体玄丹" };
         static readonly int[]    SPECIAL_COPY_COUNTS = {   3,       3,        3      };
 
+        const int DefaultCopies = 8;     // 一般牌：牌库 8 份
+        const int HuaShenLevel = 5;      // Level.HuaShen
+        const int HuaShenCopies = 6;     // 化神期牌：牌库 6 份
+
         // 当前激活仙命往牌池加的牌：base id → 份数（每 ~0.5s 由 RebuildPool 重算）。
         readonly Dictionary<int, int> _pool = new Dictionary<int, int>();
         bool _omni;                                        // 全能副职(FateStrategy 31)激活：其他副职元婴/化神各 4
@@ -39,14 +43,28 @@ namespace YxCounter
             return bp == null ? null : bp.FindILRSubPanel<CardPanel>();
         }
 
+        /// <summary>五行玉瓶（天命 199）面板。<b>收起来也要照读</b>。
+        ///
+        /// 🔴 2026-09-23：这里原本有个 <c>go.activeInHierarchy</c> 门 —— 面板一收起，玉瓶里的牌
+        /// 就整段从 owned 快照里消失，基准被这份残缺快照重建；下次打开面板牌又出现 → 被当成
+        /// 【新抽的】→ 剩余白掉一份。和「从牌桌拖牌掉份数」是同一个病（见 OwnedAssembly 注释）。
+        ///
+        /// 去掉这个门是安全的，逆向确认过两点：
+        ///   · <c>ILRSubPanelBase.Hide()</c> 只是 <c>SetActive(false)</c> / <c>canvasGroup.alpha=0</c>，
+        ///     <b>从不销毁</b>（<c>Talent199Panel.TogglePanel</c> 里「找到了且 hiding → Show()」那条
+        ///     分支就证明对象还在）；
+        ///   · <c>CardGrid.GetCard()</c> 读的是 <c>cardRoot.GetChild(0)</c>，transform 层级对
+        ///     inactive 物体照样可读。
+        /// 没这个天命时面板压根没建过，<c>FindILRSubPanel</c> 返回 null —— 本来也没牌，正确。
+        ///
+        /// 不用「记住上次看到的内容」那种粘滞法：玉瓶里的牌若被自动收回手牌，粘滞会连本带利
+        /// 数两遍（位置变了，(position,index) 去重也挡不住），把 bug 换个方向而已。</summary>
         static Talent199Panel YuPing()
         {
             try
             {
                 var bp = ILRPanelBase.FindILRPanel<BattlePanel>(); if (bp == null) return null;
-                var p = bp.FindILRSubPanel<Talent199Panel>(); if (p == null) return null;
-                var go = p.gameObject;
-                return (go != null && go.activeInHierarchy) ? p : null;
+                return bp.FindILRSubPanel<Talent199Panel>();
             }
             catch (Exception) { return null; }
         }
@@ -297,8 +315,7 @@ namespace YxCounter
 
         public int MaxCopies(int baseId)
         {
-            // 优先级：仙命加牌份数 > 全能副职(其他副职元婴化神 ×4) > 牌名特殊表(丹药=3) > 默认 8。
-            // phase-5=6 暂不做：CardConfig 无 phase 字段、也没有客户端牌库池可读。
+            // 优先级：仙命加牌份数 > 全能副职(其他副职元婴化神 ×4) > 牌名特殊表(丹药=3) > 化神期 6 > 默认 8。
             int pv;
             if (_pool.TryGetValue(baseId, out pv) && pv > 0) return pv;
             if (_omni && IsOtherSidejobHigh(baseId)) return 4;
@@ -309,9 +326,11 @@ namespace YxCounter
                 if (n != null)
                     for (int i = 0; i < SPECIAL_COPY_NAMES.Length; i++)
                         if (n == SPECIAL_COPY_NAMES[i]) return SPECIAL_COPY_COUNTS[i];
+                // 化神期（Level.HuaShen = 5）的牌牌库里只有 6 份（用户 2026-09-22 确认）。
+                if (cc != null && (int)cc.level == HuaShenLevel) return HuaShenCopies;
             }
             catch (Exception) { }
-            return 8;
+            return DefaultCopies;
         }
 
         public int RerollMult(int baseId)
@@ -334,23 +353,49 @@ namespace YxCounter
         {
             var cp = CP();
             if (cp == null) return null;
-            var d = new Dictionary<int, int>();
+            var seen = new List<OwnedCard>();
+            // 三处来源各自 try：任一处读挂了就【整拍作废】(返回 null，调用方跳过)，
+            // 绝不拿半截快照去重建基准 —— 少看见一张牌 = 基准掉一份 = 下次它出现被当新抽。
             try
             {
                 var h = cp.GetHandCards();
-                if (h != null) for (int i = 0; i < h.Count; i++) AddCard(d, h[i]);
+                if (h != null) for (int i = 0; i < h.Count; i++) AddOwned(seen, h[i]);
+            }
+            catch (Exception) { return null; }
+            try
+            {
                 var g = cp.GetCardGrids();
-                if (g != null) for (int i = 0; i < g.Count; i++) { var gr = g[i]; if (gr != null) AddCard(d, gr.GetCard()); }
+                if (g != null) for (int i = 0; i < g.Count; i++) { var gr = g[i]; if (gr != null) AddOwned(seen, gr.GetCard()); }
+            }
+            catch (Exception) { return null; }
+            try
+            {
                 var yp = YuPing();
                 if (yp != null)
                 {
                     var c = yp.cardGridContainer;
                     var yg = c != null ? c.cardGrids : null;
-                    if (yg != null) for (int i = 0; i < yg.Count; i++) { var gr = yg[i]; if (gr != null) AddCard(d, gr.GetCard()); }
+                    if (yg != null) for (int i = 0; i < yg.Count; i++) { var gr = yg[i]; if (gr != null) AddOwned(seen, gr.GetCard()); }
+                }
+            }
+            catch (Exception) { return null; }
+
+            // 正被拖着的那张：OnBeginDrag 已经 ToRootParent() 把它从格子里摘走，
+            // 上面三处都看不见它。不补进来的话，拖一次就白掉一份（见 OwnedAssembly 的注释）。
+            bool hasDrag = false;
+            OwnedCard drag = default(OwnedCard);
+            try
+            {
+                var dc = CardItem.draggingCard;
+                if (dc != null)
+                {
+                    var ci = dc.cardInfo;
+                    drag = new OwnedCard(BaseId(ci.id), (int)ci.position, ci.index);
+                    hasDrag = true;
                 }
             }
             catch (Exception) { }
-            return d;
+            return OwnedAssembly.Build(seen, hasDrag, drag);
         }
 
         /// <summary>当前手牌+牌桌上可见的牌（供画剩X）：RectTransform + base id。</summary>
@@ -370,13 +415,14 @@ namespace YxCounter
             return list;
         }
 
-        static void AddCard(Dictionary<int, int> d, CardItem c)
+        /// <summary>把一张牌记进 owned 列表（带 position/index，用来和「正在拖的那张」去重）。</summary>
+        static void AddOwned(List<OwnedCard> list, CardItem c)
         {
             if (c == null) return;
             try
             {
-                int id = BaseId(c.cardInfo.id);
-                int v; d.TryGetValue(id, out v); d[id] = v + 1;
+                var ci = c.cardInfo;
+                list.Add(new OwnedCard(BaseId(ci.id), (int)ci.position, ci.index));
             }
             catch (Exception) { }
         }

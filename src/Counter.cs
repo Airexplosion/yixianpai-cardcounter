@@ -16,6 +16,71 @@ namespace YxCounter
         int RerollMult(int baseId);
     }
 
+    /// <summary>owned 快照里的一张牌：一级 base id + 它在哪。
+    /// (position, index) 在同一时刻唯一标识一张在册的牌——这是游戏自己的编号方式
+    /// （CardPosition: Hand=0 / Used=1 / … / Talent199=6(玉瓶)），用它去重比对象引用可靠
+    /// （ILRuntime 桥对象经不同路径取到的引用不一定相等）。</summary>
+    public struct OwnedCard
+    {
+        public int BaseId;
+        public int Position;
+        public int Index;
+        public OwnedCard(int baseId, int position, int index)
+        {
+            BaseId = baseId; Position = position; Index = index;
+        }
+    }
+
+    /// <summary>
+    /// 把「看得见的牌」和「正被拖在手上的那张」装配成 owned 多重集。
+    ///
+    /// 🔴 2026-09-23 实机 bug：从牌桌把牌拖下来（拖回手牌 / 拖进五行玉瓶）会莫名减一份。
+    /// 成因是快照在拖拽途中【看不见那张牌】：
+    ///   · 牌桌那边读的是 <c>CardGrid.GetCard()</c> → <c>cardRoot.GetChild(0)</c>，
+    ///     而 <c>CardItem.OnBeginDrag</c> 一开始就 <c>ToRootParent()</c> 把牌挂到根面板 →
+    ///     格子立刻变空，这张牌从快照里消失；
+    ///   · 手牌那边读的是 <c>m_HandCards</c> 这个【列表】，拖拽不动它 → 从手牌拖不会消失。
+    /// 这正好解释了「只有从牌桌拖才减」。牌一消失，<c>ApplyOwnedSnapshot</c> 会把基准
+    /// （_prevOwned）按这份残缺快照重建；松手后牌又出现 → 增量 +1 → 被当成【新抽的一张】
+    /// → 剩余份数 −1。拖一下掉一份，拖几次掉几份。
+    ///
+    /// 修法：把 <c>CardItem.draggingCard</c> 补进快照。但【不能无脑补】——从手牌拖起来的牌
+    /// 还在 m_HandCards 里，补了就变成数两次，增量同样 +1，等于把 bug 换了个方向。
+    /// 所以按 (position, index) 去重：已经看得见的那张就不补。
+    /// </summary>
+    public static class OwnedAssembly
+    {
+        /// <summary>(position, index) → 唯一键。</summary>
+        public static long Key(int position, int index)
+        {
+            return ((long)position << 32) | (uint)index;
+        }
+
+        /// <param name="visible">三处来源（手牌 / 牌桌格子 / 玉瓶）读到的牌。</param>
+        /// <param name="hasDragged">此刻是否有牌正被拖着。</param>
+        /// <param name="dragged">被拖着的那张（<paramref name="hasDragged"/> 为 false 时忽略）。</param>
+        public static Dictionary<int, int> Build(IList<OwnedCard> visible, bool hasDragged, OwnedCard dragged)
+        {
+            var d = new Dictionary<int, int>();
+            var seen = new Dictionary<long, bool>();
+            if (visible != null)
+                for (int i = 0; i < visible.Count; i++)
+                {
+                    OwnedCard c = visible[i];
+                    seen[Key(c.Position, c.Index)] = true;
+                    Bump(d, c.BaseId);
+                }
+            if (hasDragged && !seen.ContainsKey(Key(dragged.Position, dragged.Index)))
+                Bump(d, dragged.BaseId);
+            return d;
+        }
+
+        static void Bump(Dictionary<int, int> d, int baseId)
+        {
+            int v; d.TryGetValue(baseId, out v); d[baseId] = v + 1;
+        }
+    }
+
     /// <summary>
     /// 记牌器核心（纯逻辑，不碰游戏类型）。移植自参考实现 <c>proxy_view.py</c> 的 <c>Counter</c>。
     /// 模型：每卡 <see cref="ICardMeta.MaxCopies"/> 份；抽走 −1；换牌弃掉 −(RerollMult) 额外；

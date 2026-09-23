@@ -181,5 +181,99 @@ namespace YxCounter.Tests
             c.ApplyOwnedSnapshot(D.Owned(200, 1));   // reset 后额度没了 → 这张算抽
             Assert.Equal(7, c.RemainingOf(200));
         }
+
+        // ── 2026-09-23 回归：从牌桌拖牌不能掉份数 ────────────────────────────
+        // 实机 bug：把牌从牌桌拖回手牌 / 拖进五行玉瓶，剩余份数 −1。
+        // 因为拖拽途中 CardItem.OnBeginDrag 把牌 ToRootParent()，而牌桌是按
+        // CardGrid.GetCard()（= cardRoot 的子物体）读的 → 牌从快照里消失 →
+        // 基准被残缺快照重建 → 松手后重新出现被当成新抽的。
+        const int HAND = 0, USED = 1, YUPING = 6;     // Proto.CardPosition
+
+        [Fact]
+        public void Dragging_a_card_off_the_board_does_not_look_like_a_draw()
+        {
+            var m = new FakeMeta();
+            var c = new Counter(m);
+            var onBoard = new List<OwnedCard> { new OwnedCard(100, USED, 3) };
+            c.ApplyOwnedSnapshot(OwnedAssembly.Build(onBoard, false, default(OwnedCard)));
+            Assert.Equal(7, c.RemainingOf(100));           // 抽到过一张 → 8-1
+
+            // 拖起来：格子空了，牌只剩「正在被拖」这一个身份
+            var nothingVisible = new List<OwnedCard>();
+            c.ApplyOwnedSnapshot(OwnedAssembly.Build(
+                nothingVisible, true, new OwnedCard(100, USED, 3)));
+            Assert.Equal(7, c.RemainingOf(100));           // 还是 7，不能掉
+
+            // 松手落进手牌
+            var inHand = new List<OwnedCard> { new OwnedCard(100, HAND, 0) };
+            c.ApplyOwnedSnapshot(OwnedAssembly.Build(inHand, false, default(OwnedCard)));
+            Assert.Equal(7, c.RemainingOf(100));           // 仍是 7
+        }
+
+        [Fact]
+        public void Dragging_a_card_into_the_yuping_does_not_look_like_a_draw()
+        {
+            var m = new FakeMeta();
+            var c = new Counter(m);
+            c.ApplyOwnedSnapshot(OwnedAssembly.Build(
+                new List<OwnedCard> { new OwnedCard(100, USED, 2) }, false, default(OwnedCard)));
+            c.ApplyOwnedSnapshot(OwnedAssembly.Build(
+                new List<OwnedCard>(), true, new OwnedCard(100, USED, 2)));
+            c.ApplyOwnedSnapshot(OwnedAssembly.Build(
+                new List<OwnedCard> { new OwnedCard(100, YUPING, 0) }, false, default(OwnedCard)));
+            Assert.Equal(7, c.RemainingOf(100));
+        }
+
+        [Fact]
+        public void Dragging_a_hand_card_is_not_counted_twice()
+        {
+            // 手牌拖拽时牌【还在 m_HandCards 里】（那是列表，reparent 动不到它）。
+            // 无脑把 draggingCard 补进去就会数两次 → 增量 +1 → 同样掉一份。
+            var m = new FakeMeta();
+            var c = new Counter(m);
+            var inHand = new List<OwnedCard> { new OwnedCard(100, HAND, 0) };
+            c.ApplyOwnedSnapshot(OwnedAssembly.Build(inHand, false, default(OwnedCard)));
+            Assert.Equal(7, c.RemainingOf(100));
+
+            var snap = OwnedAssembly.Build(inHand, true, new OwnedCard(100, HAND, 0));
+            Assert.Equal(1, snap[100]);                    // 只能算一张
+            c.ApplyOwnedSnapshot(snap);
+            Assert.Equal(7, c.RemainingOf(100));
+        }
+
+        [Fact]
+        public void A_real_draw_during_a_drag_is_still_counted()
+        {
+            // 补拖拽牌不能把真抽牌盖掉：同一拍里另一张新牌进来照样要减。
+            var m = new FakeMeta();
+            var c = new Counter(m);
+            c.ApplyOwnedSnapshot(OwnedAssembly.Build(
+                new List<OwnedCard> { new OwnedCard(100, USED, 0) }, false, default(OwnedCard)));
+            c.ApplyOwnedSnapshot(OwnedAssembly.Build(
+                new List<OwnedCard> { new OwnedCard(200, HAND, 0) }, true, new OwnedCard(100, USED, 0)));
+            Assert.Equal(7, c.RemainingOf(100));
+            Assert.Equal(7, c.RemainingOf(200));
+        }
+
+
+        [Fact]
+        public void A_card_missing_from_one_snapshot_is_miscounted_when_it_returns()
+        {
+            // 特征测试:钉住这个模型【按定义】就是这样 —— owned 里少了一张 = 被消耗掉了,
+            // 再出现 = 新抽的。这是合成/炼化能被正确处理的前提,不是 bug。
+            //
+            // 但它也意味着:**快照必须完整**。任何「牌还在、我们却没看见」的情况都会白掉一份。
+            // 已知并已堵上的两处:① 拖拽中的牌(OnBeginDrag 把它 ToRootParent 摘出格子);
+            // ② 五行玉瓶面板收起来(原先 YuPing() 有 activeInHierarchy 门)。
+            // 以后再加 owned 来源,先问一句「它会不会短暂读不到」。
+            var m = new FakeMeta();
+            var c = new Counter(m);
+            c.ApplyOwnedSnapshot(D.Owned(100, 1));
+            Assert.Equal(7, c.RemainingOf(100));
+            c.ApplyOwnedSnapshot(D.Owned());          // 没看见 → 基准归 0
+            c.ApplyOwnedSnapshot(D.Owned(100, 1));    // 又出现 → 算成第二次抽
+            Assert.Equal(6, c.RemainingOf(100));
+        }
+
     }
 }
